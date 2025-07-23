@@ -1,15 +1,16 @@
 import { get, Writable } from 'svelte/store';
 import { Notice } from 'obsidian';
+import { moment } from 'obsidian';
 
 import { PluginSettings } from '../config/PluginSettings';
-import { clients, projects, tags, currentTimer, dailySummary } from '../stores';
+import { clients, projects, tags } from '../stores';
 import { ApiManager } from './ApiManager';
-import type { TimeEntry } from '../model/TimeEntry';
 import type { Project } from '../model/Project';
 import type { Tag } from '../model/Tag';
 import type { ClockifyWorkspace } from '../model/ClockifyWorkspace';
-import { millisecondsToTimeString } from '../util/millisecondsToTimeString';
 import type { Client } from '../model/Client';
+import type { ReportQuery } from '../reports/ReportQuery';
+import type { Report } from '../model/Report';
 
 export class ClockifyService {
 	private apiManager: ApiManager;
@@ -24,21 +25,17 @@ export class ClockifyService {
 
 	async init() {
 		const settingsValues = get(this.settings);
-		if (settingsValues.clockifyApiKey && settingsValues.clockifyWorkspace) {
+		if (settingsValues.clockifyApiKey) {
 			try {
 				const user = await this.apiManager.get<any>('/user');
 				this.userId = user.id;
-				await this.fetchData();
-				await this.syncTimer();
 			} catch (err) {
 				console.error('Clockify: Error during initialization', err);
-				new Notice('Clockify API error. Check your API key and workspace settings.');
 			}
 		}
 	}
 
-	async fetchData() {
-		const workspaceId = get(this.settings).clockifyWorkspace;
+	async fetchDataForWorkspace(workspaceId: string) {
 		if (!workspaceId || !this.userId) return;
 
 		try {
@@ -52,20 +49,9 @@ export class ClockifyService {
 			tags.set(tagsData);
 			clients.set(clientsData);
 		} catch (err) {
-			console.error('Clockify: Error fetching data', err);
+			console.error(`Clockify: Error fetching data for workspace ${workspaceId}`, err);
 			new Notice('Clockify API error while fetching data.');
 		}
-	}
-
-	async syncTimer() {
-		const workspaceId = get(this.settings).clockifyWorkspace;
-		if (!workspaceId || !this.userId) return;
-
-		const runningTimer = await this.getCurrentTimeEntry(workspaceId, this.userId);
-		currentTimer.set(runningTimer);
-
-		const summary = await this.getDailySummary(workspaceId, this.userId);
-		dailySummary.set(summary);
 	}
 
 	async getWorkspaces(): Promise<ClockifyWorkspace[]> {
@@ -73,108 +59,92 @@ export class ClockifyService {
 	}
 
 	async getProjects(workspaceId: string): Promise<Project[]> {
-		return this.apiManager.get<Project[]>(`/workspaces/${workspaceId}/projects`);
+		const projects: Project[] = [];
+		let page = 1;
+		let hasMore = true;
+		while (hasMore) {
+			const pageOfProjects = await this.apiManager.get<Project[]>(
+				`/workspaces/${workspaceId}/projects?page=${page}&page-size=50`
+			);
+			if (pageOfProjects.length > 0) {
+				projects.push(...pageOfProjects);
+				page++;
+			} else {
+				hasMore = false;
+			}
+		}
+		return projects;
 	}
 
 	async getTags(workspaceId: string): Promise<Tag[]> {
 		return this.apiManager.get<Tag[]>(`/workspaces/${workspaceId}/tags`);
 	}
-    
-    async getClients(workspaceId: string): Promise<Client[]> {
-        return this.apiManager.get<Client[]>(`/workspaces/${workspaceId}/clients`);
-    }
 
-	async getCurrentTimeEntry(workspaceId: string, userId: string): Promise<TimeEntry | null> {
-		const runningEntries = await this.apiManager.get<TimeEntry[]>(
-			`/workspaces/${workspaceId}/user/${userId}/time-entries?in-progress=true`
-		);
-		if (runningEntries.length > 0) {
-			const entry = runningEntries[0];
-			// Adapt Clockify's timeInterval to the TimeEntry model
-			return {
-				...entry,
-				start: entry.timeInterval.start,
-				duration: new Date().getTime() - new Date(entry.timeInterval.start).getTime(),
-			};
-		}
-		return null;
+	async getClients(workspaceId: string): Promise<Client[]> {
+		return this.apiManager.get<Client[]>(`/workspaces/${workspaceId}/clients`);
 	}
 
-	async getDailySummary(workspaceId: string, userId: string): Promise<{ total: number; formated: string }> {
-		const today = new Date();
-		today.setHours(0, 0, 0, 0);
-		const start = today.toISOString();
+	async getReport(query: ReportQuery, workspaceId: string): Promise<Report> {
+		if (!workspaceId || !this.userId) {
+			throw new Error('Workspace not configured or user not initialized.');
+		}
 
-		const entries = await this.apiManager.get<TimeEntry[]>(
-			`/workspaces/${workspaceId}/user/${userId}/time-entries?start=${start}`
+        await this.fetchDataForWorkspace(workspaceId);
+
+		const requestBody = {
+			dateRangeStart: query.interval.start.toISOString(),
+			dateRangeEnd: query.interval.end.toISOString(),
+			summaryFilter: {
+				groups: [this.mapGroupBy(query.groupBy)],
+			},
+			projects: query.selection.projects.include.length > 0 ? { ids: query.selection.projects.include, contains: 'CONTAINS', status: 'ALL' } : undefined,
+			clients: query.selection.clients.include.length > 0 ? { ids: query.selection.clients.include, contains: 'CONTAINS', status: 'ALL' } : undefined,
+			tags: query.selection.tags.include.length > 0 ? { ids: query.selection.tags.include, contains: 'CONTAINS', status: 'ALL' } : undefined,
+			exportType: 'JSON',
+		};
+
+		const clockifyReport = await this.apiManager.post<any>(
+			`/workspaces/${workspaceId}/reports/summary`,
+			requestBody
 		);
-		const total = entries.reduce((sum, entry) => {
-			const duration = entry.timeInterval.end
-				? new Date(entry.timeInterval.end).getTime() - new Date(entry.timeInterval.start).getTime()
-				: 0;
-			return sum + duration;
-		}, 0);
+
+		return this.transformClockifyReport(clockifyReport);
+	}
+
+	private mapGroupBy(groupBy: string | null): string {
+		switch (groupBy) {
+			case 'project': return 'PROJECT';
+			case 'client': return 'CLIENT';
+			case 'entry': return 'TIMEENTRY';
+			case 'date': return 'DATE';
+			default: return 'PROJECT';
+		}
+	}
+
+	private transformClockifyReport(clockifyReport: any): Report {
+		const totalSeconds = clockifyReport.totals[0]?.totalTime ?? 0;
+		const allProjects = get(projects);
+		const allClients = get(clients);
+
+		const data = clockifyReport.groupOne.map((group: any) => {
+			const projectInfo = allProjects.find((p) => p.id === group._id);
+            const clientInfo = projectInfo ? allClients.find(c => c.id === projectInfo.clientId) : undefined;
+
+			return {
+				id: group._id,
+				title: {
+					project: group.name,
+					client: clientInfo?.name,
+				},
+				time: group.duration * 1000,
+				color: projectInfo?.color,
+			};
+		});
 
 		return {
-			total,
-			formated: millisecondsToTimeString(total),
+			total_grand: totalSeconds * 1000,
+			total_billable: (clockifyReport.totals[0]?.totalBillableTime ?? 0) * 1000,
+			data: data,
 		};
 	}
-
-	async stopCurrentTimeEntry(): Promise<void> {
-		const runningTimer = get(currentTimer);
-		if (!runningTimer) {
-			new Notice('No timer is currently running.');
-			return;
-		}
-
-		const workspaceId = get(this.settings).clockifyWorkspace;
-		if (!workspaceId || !this.userId) return;
-
-		try {
-			await this.apiManager.patch(
-				`/workspaces/${workspaceId}/user/${this.userId}/time-entries`,
-				{
-					end: new Date().toISOString(),
-				}
-			);
-			new Notice('Timer stopped!');
-			await this.syncTimer();
-		} catch (err) {
-			console.error('Clockify: Error stopping timer', err);
-			new Notice('Error stopping Clockify timer.');
-		}
-	}
-
-	async startTimeEntry(description: string, projectId?: string, tagIds?: string[]): Promise<void> {
-		const workspaceId = get(this.settings).clockifyWorkspace;
-		if (!workspaceId) {
-			new Notice('Please select a Clockify workspace in the settings.');
-			return;
-		}
-
-		try {
-			await this.apiManager.post(`/workspaces/${workspaceId}/time-entries`, {
-				description,
-				projectId,
-				tagIds,
-				start: new Date().toISOString(),
-			});
-			new Notice(`Timer started: ${description}`);
-			await this.syncTimer();
-		} catch (err) {
-			console.error('Clockify: Error starting timer', err);
-			new Notice('Error starting Clockify timer.');
-		}
-	}
-
-    async getReport(query: any): Promise<any> {
-        // Reporting is complex and needs a separate implementation pass.
-        // For now, we'll return an empty result.
-        new Notice('Clockify reports are not yet implemented in this version.');
-        return Promise.resolve({
-            total_grand: 0,
-            data: [],
-        });
-    }
 }
