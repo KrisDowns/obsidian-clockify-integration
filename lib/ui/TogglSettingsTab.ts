@@ -9,12 +9,12 @@ import {
   Setting,
 } from "obsidian";
 
-import type { TogglWorkspace } from "../model/TogglWorkspace";
+import type { ClockifyWorkspace } from "../model/ClockifyWorkspace";
 
-export default class TogglSettingsTab extends PluginSettingTab {
+export default class ClockifySettingsTab extends PluginSettingTab {
   private plugin: MyPlugin;
   private workspaceDropdown: DropdownComponent;
-  private workspaces: TogglWorkspace[];
+  private workspaces: ClockifyWorkspace[];
 
   constructor(app: App, plugin: MyPlugin) {
     super(app, plugin);
@@ -26,7 +26,7 @@ export default class TogglSettingsTab extends PluginSettingTab {
 
     containerEl.empty();
     containerEl.createEl("h2", {
-      text: "Toggl Track integration for Obsidian",
+      text: "Clockify integration for Obsidian",
     });
 
     this.addApiTokenSetting(containerEl);
@@ -46,18 +46,18 @@ export default class TogglSettingsTab extends PluginSettingTab {
 
   private addApiTokenSetting(containerEl: HTMLElement) {
     new Setting(containerEl)
-      .setName("API Token")
+      .setName("API Key")
       .setDesc(
-        "Enter your Toggl Track API token to use this plugin. " +
-          "You can find yours at the bottom of https://track.toggl.com/profile.",
+        "Enter your Clockify API key to use this plugin. " +
+          "You can find yours at https://clockify.me/user/settings under 'API' section.",
       )
       .addText((text) =>
         text
-          .setPlaceholder("Your API token")
+          .setPlaceholder("Your API key")
           .setValue(this.plugin.settings.apiToken || "")
           .onChange(async (value) => {
             this.plugin.settings.apiToken = value;
-            this.plugin.toggl.refreshApiConnection(value);
+            this.plugin.clockify.refreshApiConnection(value);
             await this.plugin.saveSettings();
           }),
       );
@@ -66,7 +66,7 @@ export default class TogglSettingsTab extends PluginSettingTab {
   private addTestConnectionSetting(containerEl: HTMLElement) {
     new Setting(containerEl)
       .setName("Test API connection")
-      .setDesc("Test your API token by connecting to Toggl Track.")
+      .setDesc("Test your API key by connecting to Clockify.")
       .addButton((button: ButtonComponent) => {
         button.setButtonText("connect");
         button.onClick(() => this.testConnection(button));
@@ -76,8 +76,8 @@ export default class TogglSettingsTab extends PluginSettingTab {
 
   private addWorkspaceSetting(containerEl: HTMLElement) {
     new Setting(containerEl)
-      .setName("Toggl Workspace")
-      .setDesc("Select your Toggl Workspace for fetching past timer entries.")
+      .setName("Clockify Workspace")
+      .setDesc("Select your Clockify Workspace for fetching past timer entries.")
       .addExtraButton((button: ExtraButtonComponent) => {
         button.setIcon("reset").setTooltip("Fetch Workspaces");
         button.extraSettingsEl.addClass("extra-button");
@@ -218,9 +218,9 @@ export default class TogglSettingsTab extends PluginSettingTab {
     );
     this.workspaceDropdown.setValue(currentWorkspace.id);
 
-    // fetch the other workspaces from the Toggl API
-    if (this.plugin.toggl.isApiAvailable) {
-      this.workspaces = await this.plugin.toggl.getWorkspaces();
+    // fetch the other workspaces from the Clockify API
+    if (this.plugin.clockify.isApiAvailable) {
+      this.workspaces = await this.plugin.clockify.getWorkspaces();
       this.workspaces = this.workspaces.filter(
         (w) => w.id != currentWorkspace.id,
       );
@@ -233,7 +233,7 @@ export default class TogglSettingsTab extends PluginSettingTab {
   private async testConnection(button: ButtonComponent) {
     button.setDisabled(true);
     try {
-      await this.plugin.toggl.testConnection();
+      await this.plugin.clockify.testConnection();
       button.setButtonText("success!");
     } catch {
       button.setButtonText("test failed");
