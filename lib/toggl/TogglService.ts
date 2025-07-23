@@ -10,7 +10,7 @@ import type {
   TimeEntry,
   TimeEntryStart,
 } from "lib/model/Report-v3";
-import type { TogglWorkspace } from "lib/model/TogglWorkspace";
+import type { ClockifyWorkspace } from "lib/model/ClockifyWorkspace";
 import { ISODate, Query, SelectionMode } from "lib/reports/ReportQuery";
 import { getClientIds, setClients } from "lib/stores/clients";
 import { setCurrentTimer } from "lib/stores/currentTimer";
@@ -27,14 +27,14 @@ import {
   setTags,
   Tags,
 } from "lib/stores/tags";
-import { apiStatusStore, togglService } from "lib/util/stores";
+import { apiStatusStore, clockifyService } from "lib/util/stores";
 import type MyPlugin from "main";
 import moment from "moment";
 import "moment-duration-format";
 import { Notice } from "obsidian";
 import { derived, get } from "svelte/store";
 
-import TogglAPI from "./ApiManager";
+import ClockifyAPI from "./ApiManager";
 
 export enum ApiStatus {
   AVAILABLE = "AVAILABLE",
@@ -57,16 +57,16 @@ export type SummaryReport = {
 };
 
 export type EnrichedDetailedReportItem = Awaited<
-  ReturnType<InstanceType<typeof TogglService>["getEnrichedDetailedReport"]>
+  ReturnType<InstanceType<typeof ClockifyService>["getEnrichedDetailedReport"]>
 >[number];
 
 export type SummaryReportStore = Awaited<
-  ReturnType<InstanceType<typeof TogglService>["getSummaryReport"]>
+  ReturnType<InstanceType<typeof ClockifyService>["getSummaryReport"]>
 >;
 
-export default class TogglService {
+export default class ClockifyService {
   private _plugin: MyPlugin;
-  private _apiManager: TogglAPI;
+  private _apiManager: ClockifyAPI;
 
   // UI references
   private _statusBarItem: HTMLElement;
@@ -79,14 +79,14 @@ export default class TogglService {
   constructor(plugin: MyPlugin) {
     this._plugin = plugin;
     this._statusBarItem = this._plugin.addStatusBarItem();
-    this._statusBarItem.setText("Connecting to Toggl...");
+    this._statusBarItem.setText("Connecting to Clockify...");
 
     this._plugin.registerDomEvent(this._statusBarItem, "click", () => {
       this.refreshApiConnection(this._plugin.settings.apiToken);
     });
     // Store a reference to the manager in a svelte store to avoid passing
     // of references around the component trees.
-    togglService.set(this);
+    clockifyService.set(this);
     apiStatusStore.set(ApiStatus.UNTESTED);
   }
 
@@ -96,26 +96,26 @@ export default class TogglService {
   }
 
   /**
-   * Creates a new toggl client object using the passed API token.
-   * @param token the API token for the client.
+   * Creates a new clockify client object using the passed API key.
+   * @param token the API key for the client.
    */
   public async refreshApiConnection(token: string) {
     this._setApiStatus(ApiStatus.UNTESTED);
-    this._statusBarItem.setText("Connecting to Toggl...");
+    this._statusBarItem.setText("Connecting to Clockify...");
     if (this._apiManager != null) {
-      new Notice("Reconnecting to Toggl...");
+      new Notice("Reconnecting to Clockify...");
     }
 
     window.clearInterval(this._currentTimerInterval);
     window.clearInterval(this._statusBarInterval);
     if (token != null && token != "") {
       try {
-        this._apiManager = new TogglAPI();
+        this._apiManager = new ClockifyAPI();
         await this._apiManager.setToken(token);
         this._setApiStatus(ApiStatus.AVAILABLE);
       } catch {
-        console.error("Cannot connect to toggl API.");
-        this._statusBarItem.setText("Cannot connect to Toggl API");
+        console.error("Cannot connect to clockify API.");
+        this._statusBarItem.setText("Cannot connect to Clockify API");
         this._setApiStatus(ApiStatus.UNREACHABLE);
         this.noticeAPINotAvailable();
         return;
@@ -130,20 +130,20 @@ export default class TogglService {
         .getDailySummary()
         .then((response) => setDailySummaryItems(response));
     } else {
-      this._statusBarItem.setText("Open settings to add a Toggl API token.");
+      this._statusBarItem.setText("Open settings to add a Clockify API key.");
       this._setApiStatus(ApiStatus.NO_TOKEN);
       this.noticeAPINotAvailable();
     }
     apiStatusStore.set(this._ApiAvailable);
   }
 
-  /** Throws an Error when the Toggl Track API cannot be reached. */
+  /** Throws an Error when the Clockify API cannot be reached. */
   public async testConnection() {
     await this._apiManager.testConnection();
   }
 
   /** @returns list of the user's workspaces. */
-  public async getWorkspaces(): Promise<TogglWorkspace[]> {
+  public async getWorkspaces(): Promise<ClockifyWorkspace[]> {
     return this._apiManager.getWorkspaces();
   }
 
@@ -191,7 +191,7 @@ export default class TogglService {
   }
 
   /**
-   * Start polling the Toggl Track API periodically to get the
+   * Start polling the Clockify API periodically to get the
    * currently running timer.
    */
   private startTimerInterval() {
@@ -227,10 +227,10 @@ export default class TogglService {
         this._setApiStatus(ApiStatus.AVAILABLE);
       }
     } catch (err) {
-      console.error("Error reaching Toggl API");
+      console.error("Error reaching Clockify API");
       console.error(err);
       if (this._ApiAvailable !== ApiStatus.DEGRADED) {
-        new Notice("Error updating active Toggl time entry. Retrying...");
+        new Notice("Error updating active Clockify time entry. Retrying...");
         this._setApiStatus(ApiStatus.DEGRADED);
       }
       return;
@@ -289,12 +289,12 @@ export default class TogglService {
   }
 
   /**
-   * Updates the status bar text to reflect the current Toggl
+   * Updates the status bar text to reflect the current Clockify
    * state (e.g. details of current timer).
    */
   private updateStatusBarText() {
     if (this._ApiAvailable === ApiStatus.UNTESTED) {
-      this._statusBarItem.setText("Connecting to Toggl...");
+      this._statusBarItem.setText("Connecting to Clockify...");
       return;
     }
 
@@ -325,7 +325,7 @@ export default class TogglService {
   }
 
   /**
-   * @param timeEntry TimeEntry object as returned by the Toggl Track API
+   * @param timeEntry TimeEntry object as returned by the Clockify API
    * @returns timer duration in seconds
    */
   private getTimerDuration(timeEntry: any): number {
@@ -350,11 +350,11 @@ export default class TogglService {
   private noticeAPINotAvailable() {
     switch (this._ApiAvailable) {
       case ApiStatus.NO_TOKEN:
-        new Notice("No Toggl Track API token is set.");
+        new Notice("No Clockify API key is set.");
         break;
       case ApiStatus.UNREACHABLE:
         new Notice(
-          "The Toggl Track API is unreachable. Either the Toggl services are down, or your API token is incorrect.",
+          "The Clockify API is unreachable. Either the Clockify services are down, or your API key is incorrect.",
         );
         break;
     }
@@ -411,11 +411,11 @@ export default class TogglService {
   }
 
   /**
-   * Gets a Toggl Detailed report based on the query parameter.
+   * Gets a Clockify Detailed report based on the query parameter.
    * Makes multiple HTTP requests until all pages of the paginated result are
    * gathered, then returns the combined report as a single object.
    * @param query query to be fullfilled.
-   * @returns Summary report returned by Toggl API.
+   * @returns Summary report returned by Clockify API.
    */
   public async getEnrichedDetailedReport(query: Query) {
     const { client_ids, project_ids, tag_ids } = getObjectIdsFromQuery(query);
@@ -433,7 +433,7 @@ export default class TogglService {
       .map(enrichObjectWithTags);
   }
 
-  /** True if API token is valid and Toggl API is responsive. */
+  /** True if API key is valid and Clockify API is responsive. */
   public get isApiAvailable(): boolean {
     if (this._ApiAvailable === ApiStatus.AVAILABLE) {
       return true;
@@ -459,8 +459,8 @@ export default class TogglService {
     return this._currentTimeEntry;
   }
 
-  private get workspaceId(): number {
-    return parseInt(this._plugin.settings.workspace.id);
+  private get workspaceId(): string {
+    return this._plugin.settings.workspace.id;
   }
 }
 
