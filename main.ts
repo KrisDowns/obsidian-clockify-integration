@@ -1,149 +1,124 @@
-import { DEFAULT_SETTINGS } from "lib/config/DefaultSettings";
-import type { PluginSettings } from "lib/config/PluginSettings";
-import { CODEBLOCK_LANG } from "lib/constants";
-import reportBlockHandler from "lib/reports/reportBlockHandler";
-import ClockifyService from "lib/clockify/ClockifyService";
-import ClockifySettingsTab from "lib/ui/ClockifySettingsTab";
-import ClockifyReportView, {
-  VIEW_TYPE_REPORT,
-} from "lib/ui/views/ClockifyReportView";
-import UserInputHelper from "lib/util/UserInputHelper";
-import { settingsStore, versionLogDismissed } from "lib/util/stores";
-import { Plugin, WorkspaceLeaf } from "obsidian";
+import { Notice, Plugin, WorkspaceLeaf } from 'obsidian';
+import { get } from 'svelte/store';
 
-export default class MyPlugin extends Plugin {
-  public settings: PluginSettings;
-  public clockify: ClockifyService;
-  public input: UserInputHelper;
-  public reportView: ClockifyReportView;
+import { ClockifyService } from './lib/clockify/ClockifyService';
+import { VIEW_TYPE_TOGGL_REPORTS } from './lib/constants';
+import { DefaultSettings } from './lib/config/DefaultSettings';
+import { PluginSettings } from './lib/config/PluginSettings';
+import { reportBlockHandler } from './lib/reports/reportBlockHandler';
+import { settings } from './lib/util/stores';
+import { ClockifySettingsTab } from './lib/ui/ClockifySettingsTab';
+import { StartTimerModal } from './lib/ui/modals/StartTimerModal';
+import { TogglReportView } from './lib/ui/views/TogglReportView';
+import TogglSidebarPane from './lib/ui/views/TogglSidebarPane.svelte';
+import { checkVersion } from './lib/util/checkVersion';
+import NewFeatureNotification from './lib/ui/views/NewFeatureNotification.svelte';
+import { clients, projects, tags } from './lib/stores';
 
-  async onload() {
-    console.log(`Loading obsidian-clockify-integration ${this.manifest.version}`);
+export default class ClockifyPlugin extends Plugin {
+	public settings: PluginSettings;
+	private clockifyService: ClockifyService;
+	private view: TogglReportView;
 
-    await this.loadSettings();
+	async onload() {
+		console.log('loading clockify-integration plugin');
 
-    this.addSettingTab(new ClockifySettingsTab(this.app, this));
+		await this.loadSettings();
 
-    // instantiate clockify class and set the API key if set in settings.
-    this.clockify = new ClockifyService(this);
-    if (this.settings.apiToken != null || this.settings.apiToken != "") {
-      this.clockify.refreshApiConnection(this.settings.apiToken);
-      this.input = new UserInputHelper(this);
-    }
+		settings.set(this.settings);
+		settings.subscribe(async (value) => {
+			this.settings = value;
+			await this.saveSettings();
+		});
 
-    // Register commands
-    // start timer command
-    this.addCommand({
-      checkCallback: (checking: boolean) => {
-        if (!checking) {
-          this.clockify.startTimer();
-        } else {
-          return true;
-        }
-      },
-      icon: "clock",
-      id: "start-timer",
-      name: "Start Clockify Timer",
-    });
+		this.clockifyService = new ClockifyService(settings);
 
-    // stop timer command
-    this.addCommand({
-      checkCallback: (checking: boolean) => {
-        if (!checking) {
-          this.clockify.stopTimer();
-        } else {
-          return this.clockify.currentTimeEntry != null;
-        }
-      },
-      icon: "clock",
-      id: "stop-timer",
-      name: "Stop Clockify Timer",
-    });
+		this.addSettingTab(new ClockifySettingsTab(this.app, this, this.clockifyService));
 
-    // Register the timer report view
-    this.registerView(
-      VIEW_TYPE_REPORT,
-      (leaf: WorkspaceLeaf) =>
-        (this.reportView = new ClockifyReportView(leaf, this)),
-    );
+		this.addCommand({
+			id: 'start-timer',
+			name: 'Clockify: Start timer',
+			callback: () => {
+				new StartTimerModal(this.app, this.clockifyService).open();
+			},
+		});
 
-    // Add the view to the right sidebar
-    if (this.app.workspace.layoutReady) {
-      this.initLeaf();
-    } else {
-      this.app.workspace.onLayoutReady(this.initLeaf.bind(this));
-    }
+		this.addCommand({
+			id: 'stop-timer',
+			name: 'Clockify: Stop timer',
+			callback: async () => {
+				await this.clockifyService.stopCurrentTimeEntry();
+			},
+		});
 
-    this.addCommand({
-      callback: async () => {
-        const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_REPORT);
-        if (existing.length) {
-          this.app.workspace.revealLeaf(existing[0]);
-          return;
-        }
-        await this.app.workspace.getRightLeaf(false).setViewState({
-          active: true,
-          type: VIEW_TYPE_REPORT,
-        });
-        this.app.workspace.revealLeaf(
-          this.app.workspace.getLeavesOfType(VIEW_TYPE_REPORT)[0],
-        );
-      },
-      id: "show-report-view",
-      name: "Open report view",
-    });
+        this.addCommand({
+            id: 'refresh-data',
+            name: 'Clockify: Refresh projects, tags, and clients',
+            callback: async () => {
+                new Notice('Refreshing Clockify data...');
+                await this.clockifyService.fetchData();
+                new Notice('Clockify data refreshed!');
+            }
+        })
 
-    this.addCommand({
-      checkCallback: (checking: boolean) => {
-        if (!checking) {
-          this.clockify.refreshApiConnection(this.settings.apiToken);
-        } else {
-          return this.settings.apiToken != null || this.settings.apiToken != "";
-        }
-      },
-      id: "refresh-api",
-      name: "Refresh API Connection",
-    });
+		this.registerView(VIEW_TYPE_TOGGL_REPORTS, (leaf) => (this.view = new TogglReportView(leaf, this.settings)));
 
-    // Enable processing codeblocks for rendering in-note reports
-    this.registerCodeBlockProcessor();
-  }
+		this.app.workspace.onLayoutReady(async () => {
+			this.addSidebar();
 
-  initLeaf(): void {
-    if (this.app.workspace.getLeavesOfType(VIEW_TYPE_REPORT).length) {
-      return;
-    }
-    this.app.workspace.getRightLeaf(false).setViewState({
-      type: VIEW_TYPE_REPORT,
-    });
-  }
+			if (this.settings.showNewFeatureNotification) {
+				const versionCheck = checkVersion(this.manifest.version, this.settings.lastUsedVersion);
+				if (versionCheck.isNew) {
+					const n = new NewFeatureNotification(this.app, this.manifest.version, () => {
+						this.settings.lastUsedVersion = this.manifest.version;
+						this.settings.showNewFeatureNotification = false;
+						this.saveSettings();
+						n.hide();
+					});
+					n.show();
+				}
+			}
+		});
 
-  /**
-   * Registeres the MarkdownPostProcessor for rendering reports from
-   * codeblock queries.
-   */
-  registerCodeBlockProcessor() {
-    this.registerMarkdownCodeBlockProcessor("clockify", reportBlockHandler);
-  }
+		this.registerMarkdownCodeBlockProcessor('toggl', reportBlockHandler(this.clockifyService));
+	}
 
-  onunload() {}
+	onunload() {
+		console.log('unloading clockify-integration plugin');
+		this.app.workspace
+			.getLeavesOfType('toggl-sidebar')
+			.forEach((leaf: WorkspaceLeaf) => leaf.detach());
+	}
 
-  async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-    if (!this.settings.hasDismissedAlert) {
-      this.settings.hasDismissedAlert = false;
-    }
-    settingsStore.set(this.settings);
+	async loadSettings() {
+		this.settings = Object.assign({}, DefaultSettings, await this.loadData());
+	}
 
-    versionLogDismissed.set(this.settings.hasDismissedAlert);
-    versionLogDismissed.subscribe((bool) => {
-      this.settings.hasDismissedAlert = bool;
-      this.saveSettings();
-    });
-  }
+	async saveSettings() {
+		await this.saveData(this.settings);
+	}
 
-  async saveSettings() {
-    await this.saveData(this.settings);
-    settingsStore.set(this.settings);
-  }
+	private addSidebar() {
+		this.addRibbonIcon('clock', 'Clockify', () => {
+			// This creates a new leaf if one doesn't exist
+			this.app.workspace.getRightLeaf(false).setViewState({
+				type: 'toggl-sidebar',
+			});
+		});
+
+		this.registerView('toggl-sidebar', (leaf: WorkspaceLeaf) => {
+			const pane = new TogglSidebarPane({
+				target: leaf.view.contentEl,
+				props: {
+					plugin: this,
+                    clockifyService: this.clockifyService,
+				},
+			});
+			return pane;
+		});
+
+		this.app.workspace.getRightLeaf(false).setViewState({
+			type: 'toggl-sidebar',
+		});
+	}
 }
