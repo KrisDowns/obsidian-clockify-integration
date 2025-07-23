@@ -1,247 +1,97 @@
-import { DEFAULT_SETTINGS } from "lib/config/DefaultSettings";
-import type MyPlugin from "main";
-import {
-  App,
-  ButtonComponent,
-  DropdownComponent,
-  ExtraButtonComponent,
-  PluginSettingTab,
-  Setting,
-} from "obsidian";
+import { App, Notice, PluginSettingTab, Setting } from 'obsidian';
+import { get } from 'svelte/store';
+import type ClockifyPlugin from '../../main';
+import type { ClockifyService } from '../clockify/ClockifyService';
+import type { ClockifyWorkspace } from '../model/ClockifyWorkspace';
+import { settings } from '../util/stores';
 
-import type { ClockifyWorkspace } from "../model/ClockifyWorkspace";
+export class ClockifySettingsTab extends PluginSettingTab {
+	private plugin: ClockifyPlugin;
+	private clockifyService: ClockifyService;
+	private workspaces: ClockifyWorkspace[] = [];
 
-export default class ClockifySettingsTab extends PluginSettingTab {
-  private plugin: MyPlugin;
-  private workspaceDropdown: DropdownComponent;
-  private workspaces: ClockifyWorkspace[];
+	constructor(app: App, plugin: ClockifyPlugin, clockifyService: ClockifyService) {
+		super(app, plugin);
+		this.plugin = plugin;
+		this.clockifyService = clockifyService;
+	}
 
-  constructor(app: App, plugin: MyPlugin) {
-    super(app, plugin);
-    this.plugin = plugin;
-  }
+	async display() {
+		const { containerEl } = this;
+		containerEl.empty();
+		containerEl.createEl('h2', { text: 'Clockify Integration Settings' });
 
-  display(): void {
-    const { containerEl } = this;
+		new Setting(containerEl)
+			.setName('Clockify API Key')
+			.setDesc('Your personal API key for Clockify.')
+			.addText((text) =>
+				text
+					.setPlaceholder('Enter your API key')
+					.setValue(this.plugin.settings.clockifyApiKey)
+					.onChange(async (value) => {
+						this.plugin.settings.clockifyApiKey = value;
+						await this.plugin.saveSettings();
+						settings.set(this.plugin.settings);
+					})
+			);
 
-    containerEl.empty();
-    containerEl.createEl("h2", {
-      text: "Clockify integration for Obsidian",
-    });
+		const workspaceSetting = new Setting(containerEl)
+			.setName('Clockify Workspace')
+			.setDesc('The workspace to use for time tracking.');
 
-    this.addApiTokenSetting(containerEl);
-    this.addTestConnectionSetting(containerEl);
-    this.addWorkspaceSetting(containerEl);
-    this.addUpdateRealTimeSetting(containerEl);
+		// Add a connect button to fetch workspaces
+		workspaceSetting.addButton((button) =>
+			button.setButtonText('Connect and fetch workspaces').onClick(async () => {
+				if (!this.plugin.settings.clockifyApiKey) {
+					new Notice('Please enter your Clockify API key first.');
+					return;
+				}
+				try {
+					button.setButtonText('Connecting...').setDisabled(true);
+					this.workspaces = await this.clockifyService.getWorkspaces();
+					new Notice(`Found ${this.workspaces.length} workspaces!`);
+					// Re-render the display to show the dropdown
+					this.display();
+				} catch (err) {
+					new Notice('Failed to connect to Clockify. Check your API key.');
+					this.workspaces = [];
+				} finally {
+					button.setButtonText('Connect and fetch workspaces').setDisabled(false);
+				}
+			})
+		);
 
-    containerEl.createEl("h2", {
-      text: "Status bar display options",
-    });
-    this.addCharLimitStatusBarSetting(containerEl);
-    this.addStatusBarFormatSetting(containerEl);
-    this.addStatusBarPrefixSetting(containerEl);
-    this.addStatusBarProjectSetting(containerEl);
-    this.addStatusBarNoEntrySetting(containerEl);
-  }
+		// If workspaces are loaded, show the dropdown
+		if (this.workspaces.length > 0) {
+			const options = this.workspaces.reduce((acc, ws) => {
+				acc[ws.id] = ws.name;
+				return acc;
+			}, {});
 
-  private addApiTokenSetting(containerEl: HTMLElement) {
-    new Setting(containerEl)
-      .setName("API Key")
-      .setDesc(
-        "Enter your Clockify API key to use this plugin. " +
-          "You can find yours at https://clockify.me/user/settings under 'API' section.",
-      )
-      .addText((text) =>
-        text
-          .setPlaceholder("Your API key")
-          .setValue(this.plugin.settings.apiToken || "")
-          .onChange(async (value) => {
-            this.plugin.settings.apiToken = value;
-            this.plugin.clockify.refreshApiConnection(value);
-            await this.plugin.saveSettings();
-          }),
-      );
-  }
+			workspaceSetting.addDropdown((dropdown) => {
+				dropdown
+					.addOptions(options)
+					.setValue(this.plugin.settings.clockifyWorkspace)
+					.onChange(async (value) => {
+						this.plugin.settings.clockifyWorkspace = value;
+						await this.plugin.saveSettings();
+						settings.set(this.plugin.settings);
+						// Re-initialize the service with the new workspace
+						await this.clockifyService.init();
+						new Notice(`Set active workspace to: ${options[value]}`);
+					});
+			});
+		}
 
-  private addTestConnectionSetting(containerEl: HTMLElement) {
-    new Setting(containerEl)
-      .setName("Test API connection")
-      .setDesc("Test your API key by connecting to Clockify.")
-      .addButton((button: ButtonComponent) => {
-        button.setButtonText("connect");
-        button.onClick(() => this.testConnection(button));
-        button.setCta();
-      });
-  }
-
-  private addWorkspaceSetting(containerEl: HTMLElement) {
-    new Setting(containerEl)
-      .setName("Clockify Workspace")
-      .setDesc("Select your Clockify Workspace for fetching past timer entries.")
-      .addExtraButton((button: ExtraButtonComponent) => {
-        button.setIcon("reset").setTooltip("Fetch Workspaces");
-        button.extraSettingsEl.addClass("extra-button");
-        button.onClick(async () => {
-          await this.fetchWorkspaces();
-        });
-      })
-      .addDropdown(async (dropdown: DropdownComponent) => {
-        // Register callback for saving new value
-        dropdown.onChange(async (value: string) => {
-          const workspace = this.workspaces.find((w) => w.id === value);
-          this.plugin.settings.workspace = workspace;
-          await this.plugin.saveSettings();
-        });
-        this.workspaceDropdown = dropdown;
-        await this.fetchWorkspaces();
-      });
-  }
-
-  private addUpdateRealTimeSetting(containerEl: HTMLElement) {
-    new Setting(containerEl)
-      .setName("Real time daily total")
-      .setDesc(
-        "Update the daily total time in the sidebar " +
-          "every second when a timer is running.",
-      )
-      .addToggle((toggle) => {
-        toggle
-          .setValue(this.plugin.settings.updateInRealTime || false)
-          .onChange(async (value) => {
-            this.plugin.settings.updateInRealTime = value;
-            await this.plugin.saveSettings();
-          });
-      });
-  }
-
-  private addCharLimitStatusBarSetting(containerEl: HTMLElement) {
-    new Setting(containerEl)
-      .setName("Status bar character limit")
-      .setDesc(
-        "Set a character limit for the time entry " + 
-        "displayed in the status bar."
-      )
-      .addText((text) => {
-        text.setPlaceholder(String(DEFAULT_SETTINGS.charLimitStatusBar))
-        text.inputEl.type = "number"
-        text.setValue(String(this.plugin.settings.charLimitStatusBar))
-        text.onChange(async (value) => {
-          this.plugin.settings.charLimitStatusBar = (
-            value !== "" ? Number(value) : DEFAULT_SETTINGS.charLimitStatusBar
-          );
-          await this.plugin.saveSettings();
-        });
-    });
-  }
-
-  private addStatusBarFormatSetting(containerEl: HTMLElement) {
-    new Setting(containerEl)
-      .setName("Status bar time format")
-      .setDesc(
-        "Time format for the status bar. " +
-          "See https://github.com/jsmreese/moment-duration-format for format options.",
-      )
-      .addText((text) =>
-        text
-          .setPlaceholder(DEFAULT_SETTINGS.statusBarFormat)
-          .setValue(this.plugin.settings.statusBarFormat || "")
-          .onChange(async (value) => {
-            this.plugin.settings.statusBarFormat = value;
-            await this.plugin.saveSettings();
-          }),
-      );
-  }
-
-  private addStatusBarPrefixSetting(containerEl: HTMLElement) {
-    new Setting(containerEl)
-      .setName("Status bar prefix")
-      .setDesc(
-        "Prefix before the time entry in the status bar. " +
-          "Leave blank for no prefix.",
-      )
-      .addText((text) =>
-        text
-          .setPlaceholder(DEFAULT_SETTINGS.statusBarPrefix)
-          .setValue(this.plugin.settings.statusBarPrefix || "")
-          .onChange(async (value) => {
-            this.plugin.settings.statusBarPrefix = value;
-            await this.plugin.saveSettings();
-          }),
-      );
-  }
-
-  private addStatusBarProjectSetting(containerEl: HTMLElement) {
-    new Setting(containerEl)
-      .setName("Show project in status bar")
-      .setDesc(
-        "Show the project of the time entry displayed in the status bar."
-      )
-      .addToggle((toggle) => {
-        toggle
-          .setValue(this.plugin.settings.statusBarShowProject || false)
-          .onChange(async (value) => {
-            this.plugin.settings.statusBarShowProject = value;
-            await this.plugin.saveSettings();
-          });
-      });
-  }
-
-  private addStatusBarNoEntrySetting(containerEl: HTMLElement) {
-    new Setting(containerEl)
-      .setName("No entry status bar message")
-      .setDesc(
-        "Message in the status bar when no time entry is running."
-      )
-      .addText((text) =>
-        text
-          .setPlaceholder(DEFAULT_SETTINGS.statusBarNoEntryMesssage)
-          .setValue(this.plugin.settings.statusBarNoEntryMesssage || "")
-          .onChange(async (value) => {
-            this.plugin.settings.statusBarNoEntryMesssage = value;
-            await this.plugin.saveSettings();
-          }),
-      );
-  }
-
-  private async fetchWorkspaces() {
-    // empty the dropdown's list
-    const selectEl = this.workspaceDropdown.selectEl;
-    for (let i = selectEl.length - 1; i >= 0; i--) {
-      this.workspaceDropdown.selectEl.remove(i);
-    }
-
-    // add the current setting to populate the field
-    const currentWorkspace = this.plugin.settings.workspace;
-    this.workspaceDropdown.addOption(
-      currentWorkspace.id,
-      currentWorkspace.name,
-    );
-    this.workspaceDropdown.setValue(currentWorkspace.id);
-
-    // fetch the other workspaces from the Clockify API
-    if (this.plugin.clockify.isApiAvailable) {
-      this.workspaces = await this.plugin.clockify.getWorkspaces();
-      this.workspaces = this.workspaces.filter(
-        (w) => w.id != currentWorkspace.id,
-      );
-      for (const w of this.workspaces) {
-        this.workspaceDropdown.addOption(w.id, w.name);
-      }
-    }
-  }
-
-  private async testConnection(button: ButtonComponent) {
-    button.setDisabled(true);
-    try {
-      await this.plugin.clockify.testConnection();
-      button.setButtonText("success!");
-    } catch {
-      button.setButtonText("test failed");
-    } finally {
-      button.setDisabled(false);
-      window.setTimeout(() => {
-        button.setButtonText("connect");
-      }, 2500);
-    }
-  }
+		new Setting(containerEl)
+			.setName('Show "New Feature" notifications')
+			.setDesc('Disable this to hide the notification about new features after an update.')
+			.addToggle((toggle) =>
+				toggle.setValue(this.plugin.settings.showNewFeatureNotification).onChange(async (value) => {
+					this.plugin.settings.showNewFeatureNotification = value;
+					await this.plugin.saveSettings();
+					settings.set(this.plugin.settings);
+				})
+			);
+	}
 }
