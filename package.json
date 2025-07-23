@@ -15,7 +15,7 @@
     "obsidian-plugin"
   ],
   "author": "krisdowns",
-  "license": "MIT",
+  "license": "GPL-3.0-or-later",
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^1.0.0-next.41",
     "@tsconfig/svelte": "^3.0.0",
