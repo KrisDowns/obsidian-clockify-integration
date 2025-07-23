@@ -2,32 +2,32 @@ import { DEFAULT_SETTINGS } from "lib/config/DefaultSettings";
 import type { PluginSettings } from "lib/config/PluginSettings";
 import { CODEBLOCK_LANG } from "lib/constants";
 import reportBlockHandler from "lib/reports/reportBlockHandler";
-import TogglService from "lib/toggl/TogglService";
-import TogglSettingsTab from "lib/ui/TogglSettingsTab";
-import TogglReportView, {
+import ClockifyService from "lib/clockify/ClockifyService";
+import ClockifySettingsTab from "lib/ui/ClockifySettingsTab";
+import ClockifyReportView, {
   VIEW_TYPE_REPORT,
-} from "lib/ui/views/TogglReportView";
+} from "lib/ui/views/ClockifyReportView";
 import UserInputHelper from "lib/util/UserInputHelper";
 import { settingsStore, versionLogDismissed } from "lib/util/stores";
 import { Plugin, WorkspaceLeaf } from "obsidian";
 
 export default class MyPlugin extends Plugin {
   public settings: PluginSettings;
-  public toggl: TogglService;
+  public clockify: ClockifyService;
   public input: UserInputHelper;
-  public reportView: TogglReportView;
+  public reportView: ClockifyReportView;
 
   async onload() {
-    console.log(`Loading obsidian-toggl-integration ${this.manifest.version}`);
+    console.log(`Loading obsidian-clockify-integration ${this.manifest.version}`);
 
     await this.loadSettings();
 
-    this.addSettingTab(new TogglSettingsTab(this.app, this));
+    this.addSettingTab(new ClockifySettingsTab(this.app, this));
 
-    // instantiate toggl class and set the API token if set in settings.
-    this.toggl = new TogglService(this);
+    // instantiate clockify class and set the API key if set in settings.
+    this.clockify = new ClockifyService(this);
     if (this.settings.apiToken != null || this.settings.apiToken != "") {
-      this.toggl.refreshApiConnection(this.settings.apiToken);
+      this.clockify.refreshApiConnection(this.settings.apiToken);
       this.input = new UserInputHelper(this);
     }
 
@@ -36,35 +36,35 @@ export default class MyPlugin extends Plugin {
     this.addCommand({
       checkCallback: (checking: boolean) => {
         if (!checking) {
-          this.toggl.startTimer();
+          this.clockify.startTimer();
         } else {
           return true;
         }
       },
       icon: "clock",
       id: "start-timer",
-      name: "Start Toggl Timer",
+      name: "Start Clockify Timer",
     });
 
     // stop timer command
     this.addCommand({
       checkCallback: (checking: boolean) => {
         if (!checking) {
-          this.toggl.stopTimer();
+          this.clockify.stopTimer();
         } else {
-          return this.toggl.currentTimeEntry != null;
+          return this.clockify.currentTimeEntry != null;
         }
       },
       icon: "clock",
       id: "stop-timer",
-      name: "Stop Toggl Timer",
+      name: "Stop Clockify Timer",
     });
 
     // Register the timer report view
     this.registerView(
       VIEW_TYPE_REPORT,
       (leaf: WorkspaceLeaf) =>
-        (this.reportView = new TogglReportView(leaf, this)),
+        (this.reportView = new ClockifyReportView(leaf, this)),
     );
 
     // Add the view to the right sidebar
@@ -96,7 +96,7 @@ export default class MyPlugin extends Plugin {
     this.addCommand({
       checkCallback: (checking: boolean) => {
         if (!checking) {
-          this.toggl.refreshApiConnection(this.settings.apiToken);
+          this.clockify.refreshApiConnection(this.settings.apiToken);
         } else {
           return this.settings.apiToken != null || this.settings.apiToken != "";
         }
@@ -123,7 +123,7 @@ export default class MyPlugin extends Plugin {
    * codeblock queries.
    */
   registerCodeBlockProcessor() {
-    this.registerMarkdownCodeBlockProcessor(CODEBLOCK_LANG, reportBlockHandler);
+    this.registerMarkdownCodeBlockProcessor("clockify", reportBlockHandler);
   }
 
   onunload() {}
