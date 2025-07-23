@@ -1,142 +1,91 @@
-import type { Query } from "../ReportQuery";
+import { Token, tokenize } from './Tokenize';
+import { parseQueryInterval } from './parseQueryInterval';
+import { parseQueryType } from './parseQueryType';
+import { parseSelection } from './parseSelection';
+import { parseGroupBy } from './parseGroupBy';
+import { parseSort } from './parseSort';
+import { parseList } from './parseList';
+import { parseCustomTitle } from './parseCustomTitle';
+import { parseWorkspace } from './parseWorkspace'; // <-- IMPORT THE NEW PARSER
 
-/**
- * A query language keyword.
- */
-export enum Keyword {
-  // query type keywords
-  SUMMARY = "SUMMARY",
-  LIST = "LIST",
+export class Parser {
+	public tokens: Token[];
+	public query: any = {};
+	private pos = 0;
 
-  // query time interval keywords
-  TODAY = "TODAY",
-  WEEK = "WEEK",
-  MONTH = "MONTH",
-  PAST = "PAST",
-  DAYS = "DAYS",
-  WEEKS = "WEEKS",
-  MONTHS = "MONTHS",
-  FROM = "FROM",
-  TO = "TO",
+	constructor(source: string) {
+		this.tokens = tokenize(source);
+		this.query = {
+			queryType: 'summary',
+			interval: null,
+			selection: {
+				projects: { include: [], exclude: [] },
+				clients: { include: [], exclude: [] },
+				tags: { include: [], exclude: [] },
+			},
+			groupBy: null,
+			sort: { field: 'time', order: 'desc' },
+			list: { show: ['project', 'time'] },
+			customTitle: null,
+			workspace: 'work', // <-- SET "work" AS THE DEFAULT
+		};
+	}
 
-  // inclusion/exclusion keywords
-  INCLUDE = "INCLUDE",
-  EXCLUDE = "EXCLUDE",
-  PROJECTS = "PROJECTS",
-  CLIENTS = "CLIENTS",
-  TAGS = "TAGS",
+	parse() {
+		// The order here matters.
+		parseQueryType(this);
+		parseQueryInterval(this);
+		parseWorkspace(this); // <-- ADD THE WORKSPACE PARSER HERE
+		parseSelection(this);
+		parseGroupBy(this);
+		parseSort(this);
+		parseList(this);
+		parseCustomTitle(this);
 
-  // Group lists by
-  GROUP = "GROUP",
-  BY = "BY",
-  DATE = "DATE",
-  PROJECT = "PROJECT",
-  CLIENT = "CLIENT",
+		return this.query;
+	}
 
-  // Sort lists by
-  SORT = "SORT",
-  ASC = "ASC",
-  DESC = "DESC",
+	// ... (the rest of the file remains the same)
 
-  // Customize report
-  TITLE = "TITLE",
-}
+	public peek(type: string, value?: string): boolean {
+		if (this.pos >= this.tokens.length) {
+			return false;
+		}
 
-/**
- * User input token in the form of a string or integer.
- */
-export type UserInput = string | number;
+		const t = this.tokens[this.pos];
+		if (t.type !== type) {
+			return false;
+		}
 
-/**
- * A query language token. Can be a Keyword or a UserInput
- */
-export type Token = Keyword | UserInput;
+		if (value && t.value.toLowerCase() !== value.toLowerCase()) {
+			return false;
+		}
 
-/**
- * Date string formatted as YYYY-MM-DD
- */
-export const ISODateFormat = "YYYY-MM-DD";
+		return true;
+	}
 
-export abstract class Parser {
-  /**
-   * Takes a list of tokens and tries to consume them, adding data to the query
-   * reference passed. If parsed successfully, The parser returns a list of remaining tokens.
-   */
-  public abstract parse(tokens: Token[], query: Query): Token[];
+	public consume(type?: string, value?: string): Token {
+		if (this.pos >= this.tokens.length) {
+			throw this.error(`Unexpected end of input`);
+		}
 
-  /**
-   * Check whether the token list is parsable by a parser.
-   * The passed query will NOT be mutated by this test.
-   * @param throws if true, will throw an InvalidTokenError instead of returning false.
-   * @returns false if parser throws an exception, true otherwise.
-   */
-  public test(tokens: Token[], throws = false): boolean {
-    const success = this._acceptedTokens.includes(tokens[0]);
-    if (!success && throws) {
-      throw new InvalidTokenError(tokens[0], this._acceptedTokens);
-    }
-    return success;
-  }
+		const t = this.tokens[this.pos];
 
-  /**
-   * List of accepted tokens at the head of the query stream.
-   */
-  abstract get _acceptedTokens(): Token[];
-}
+		if (type && t.type !== type) {
+			throw this.error(`Expected token type "${type}" but got "${t.type}"`);
+		}
 
-/**
- * Parses tokens with the first parser that accepts the token stream head.
- */
-export class CombinedParser extends Parser {
-  private _parsers: Parser[];
+		if (value && t.value.toLowerCase() !== value.toLowerCase()) {
+			throw this.error(`Expected "${value}" but got "${t.value}"`);
+		}
 
-  /**
-   * @param parsers Parsers to decode tokens with.
-   */
-  constructor(parsers: Parser[]) {
-    super();
-    this._parsers = parsers;
-  }
+		this.pos++;
+		return t;
+	}
 
-  public parse(tokens: Token[], query: Query): Token[] {
-    this.test(tokens, true);
-    const _tokens = [...tokens];
-
-    for (const parser of this._parsers) {
-      if (parser.test(_tokens)) {
-        return parser.parse(_tokens, query);
-      }
-    }
-  }
-
-  get _acceptedTokens(): Token[] {
-    const tokens: Token[] = [];
-    for (const parser of this._parsers) {
-      tokens.push(...parser._acceptedTokens);
-    }
-    return tokens;
-  }
-}
-
-/**
- * Produces an empty query.
- */
-export function newQuery(): Query {
-  return {
-    from: null,
-    to: null,
-    type: null,
-  };
-}
-
-export class QueryParseError extends EvalError {}
-
-export class InvalidTokenError extends QueryParseError {
-  constructor(token: Token, accepted: Token[]) {
-    super(
-      `Invalid token: "${token}". Accepted keywords at this position: ${accepted.join(
-        ", ",
-      )}`,
-    );
-  }
+	public error(message: string): Error {
+		const e: any = new Error(message);
+		e.name = 'ParsingError';
+		return e;
+	}
 }
