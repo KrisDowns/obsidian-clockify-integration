@@ -1,15 +1,15 @@
-import type { TogglWorkspace } from "../model/TogglWorkspace";
+import type { ClockifyWorkspace } from "../model/ClockifyWorkspace";
 
 export interface PluginSettings {
   /**
-   * The user's Toggl Track API token.
+   * The user's Clockify API key.
    */
   apiToken: string;
 
   /**
-   * The Toggl workspace to be used for the user's timer.
+   * The Clockify workspace to be used for the user's timer.
    */
-  workspace: TogglWorkspace;
+  workspace: ClockifyWorkspace;
 
   /** Has dismissed the update alert for 0.4.0 */
   hasDismissedAlert?: boolean;
